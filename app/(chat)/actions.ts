@@ -1,108 +1,97 @@
 "use server";
 
-import { generateText, type UIMessage } from "ai";
-import { cookies } from "next/headers";
-import { auth } from "@/app/(auth)/auth";
-import { getTitleModel } from "@/lib/ai/providers";
-import { titlePrompt } from "@/lib/ai/prompts";
-import type { VisibilityType } from "@/components/chat/visibility-selector";
-import {
-  deleteMessagesByChatIdAfterTimestamp,
-  getChatById,
-  getMessageById,
-  updateChatVisibilityById,
-} from "@/lib/db/queries";
+import { signIn, signOut } from "@/app/(auth)/auth";
+import { createUser, getUser } from "@/lib/db/queries";
+import { AuthError } from "next-auth";
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { z } from "zod";
 
-export async function saveChatModelAsCookie(model: string) {
-  const cookieStore = await cookies();
-  cookieStore.set("chat-model", model);
-}
+const authSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+});
 
-export async function generateTitleFromUserMessage({
-  message,
-}: {
-  message: UIMessage;
-}) {
+export type LoginActionState = {
+  error?: string;
+  success?: boolean;
+};
+
+export type RegisterActionState = {
+  error?: string;
+  success?: boolean;
+};
+
+export async function login(
+  prevState: LoginActionState | undefined,
+  formData: FormData
+): Promise<LoginActionState> {
   try {
-    let messageText = "";
-
-    if (message.content && typeof message.content === "string") {
-      messageText = message.content;
-    } else if (message.parts && Array.isArray(message.parts)) {
-      for (const part of message.parts) {
-        if (part && typeof part === "object" && "type" in part && part.type === "text") {
-          const textPart = part as { type: "text"; text: string };
-          if (textPart.text) {
-            messageText = textPart.text;
-            break;
-          }
-        }
-      }
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
+    
+    const validated = authSchema.safeParse({ email, password });
+    if (!validated.success) {
+      return { error: "Invalid email or password format" };
     }
 
-    if (!messageText) {
-      messageText = "New chat";
-    }
-
-    const { text } = await generateText({
-      model: getTitleModel(),
-      system: titlePrompt,
-      prompt: messageText,
+    await signIn("credentials", {
+      email,
+      password,
+      redirect: false,
     });
 
-    return text
-      .replace(/^[#*"\s]+/, "")
-      .replace(/["]+$/, "")
-      .trim();
+    revalidatePath("/");
+    return { success: true };
   } catch (error) {
-    console.error("Error generating title:", error);
-    return "New Chat";
+    if (error instanceof AuthError) {
+      if (error.type === "CredentialsSignin") {
+        return { error: "Invalid email or password" };
+      }
+      return { error: "An error occurred during login" };
+    }
+    return { error: "An unexpected error occurred" };
   }
 }
 
-export async function deleteTrailingMessages({ id }: { id: string }) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    throw new Error("Unauthorized");
-  }
+export async function register(
+  prevState: RegisterActionState | undefined,
+  formData: FormData
+): Promise<RegisterActionState> {
+  try {
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
+    
+    const validated = authSchema.safeParse({ email, password });
+    if (!validated.success) {
+      return { error: "Invalid email or password format" };
+    }
 
-  const messageResult = await getMessageById({ id });
-  if (!messageResult) {
-    throw new Error("Message not found");
-  }
+    const existingUser = await getUser(email);
+    if (existingUser.length > 0) {
+      return { error: "A user with this email already exists" };
+    }
 
-  const message = Array.isArray(messageResult) ? messageResult[0] : messageResult;
-  if (!message || !message.chatId) {
-    throw new Error("Message not found");
-  }
+    await createUser(email, password);
+    
+    // Auto-login after registration
+    await signIn("credentials", {
+      email,
+      password,
+      redirect: false,
+    });
 
-  const chat = await getChatById({ id: message.chatId });
-  if (!chat || chat.userId !== session.user.id) {
-    throw new Error("Unauthorized");
+    revalidatePath("/");
+    return { success: true };
+  } catch (error) {
+    if (error instanceof AuthError) {
+      return { error: "An error occurred during registration" };
+    }
+    return { error: "An unexpected error occurred" };
   }
-
-  await deleteMessagesByChatIdAfterTimestamp({
-    chatId: message.chatId,
-    timestamp: message.createdAt || new Date(),
-  });
 }
 
-export async function updateChatVisibility({
-  chatId,
-  visibility,
-}: {
-  chatId: string;
-  visibility: VisibilityType;
-}) {
-  const session = await auth();
-  if (!session?.user?.id) {
-    throw new Error("Unauthorized");
-  }
-
-  const chat = await getChatById({ id: chatId });
-  if (!chat || chat.userId !== session.user.id) {
-    throw new Error("Unauthorized");
-  }
-
-  await updateChatVisibilityById({ chatId, visibility });
+export async function signOutAction() {
+  await signOut();
+  redirect("/login");
 }
