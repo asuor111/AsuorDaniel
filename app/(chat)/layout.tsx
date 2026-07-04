@@ -6,7 +6,6 @@ import { Toaster } from "sonner";
 import { ActiveChatProvider } from "@/hooks/use-active-chat";
 import { auth } from "@/app/(auth)/auth";
 
-// Separate component that uses auth
 async function ChatLayoutContent({
   children,
 }: {
@@ -50,7 +49,9 @@ async function ChatLayoutContent({
             <div className="flex flex-1 overflow-hidden">
               <AppSidebar user={user} />
               <SidebarInset>
-                <div className="flex h-full flex-col">{children}</div>
+                <div className="flex h-full flex-col">
+                  {children}
+                </div>
               </SidebarInset>
             </div>
           </div>
@@ -61,7 +62,6 @@ async function ChatLayoutContent({
   );
 }
 
-// Main layout with Suspense boundary
 export default function ChatLayout({
   children,
 }: {

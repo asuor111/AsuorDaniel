@@ -1,60 +1,88 @@
 "use server";
 
-import { generateText, type UIMessage } from "ai";
-import { cookies } from "next/headers";
-import { auth } from "@/app/(auth)/auth";
-import { getTitleModel } from "@/lib/ai/providers";
-import { titlePrompt } from "@/lib/ai/prompts";
+import { signIn, signOut } from "@/app/(auth)/auth";
+import { createUser, getUser } from "@/lib/db/queries";
+import { AuthError } from "next-auth";
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 
-export async function saveChatModelAsCookie(model: string) {
-  const cookieStore = await cookies();
-  cookieStore.set("chat-model", model);
-}
+export type LoginActionState = {
+  error?: string;
+  success?: boolean;
+};
 
-export async function generateTitleFromUserMessage({
-  message,
-}: {
-  message: UIMessage;
-}) {
+export type RegisterActionState = {
+  error?: string;
+  success?: boolean;
+};
+
+export async function login(
+  prevState: LoginActionState | undefined,
+  formData: FormData
+): Promise<LoginActionState> {
   try {
-    // Extract text from message safely
-    let messageText = "";
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
 
-    // Try content first (for simple messages)
-    if (message.content && typeof message.content === "string") {
-      messageText = message.content;
-    } 
-    // Try parts (for complex messages)
-    else if (message.parts && Array.isArray(message.parts)) {
-      for (const part of message.parts) {
-        // Check if this is a text part with text property
-        if (part && typeof part === "object" && "type" in part && part.type === "text") {
-          const textPart = part as { type: "text"; text: string };
-          if (textPart.text) {
-            messageText = textPart.text;
-            break;
-          }
-        }
-      }
+    if (!email || !password) {
+      return { error: "Email and password are required" };
     }
 
-    // Fallback if no text found
-    if (!messageText) {
-      messageText = "New chat";
-    }
-
-    const { text } = await generateText({
-      model: getTitleModel(),
-      system: titlePrompt,
-      prompt: messageText,
+    await signIn("credentials", {
+      email,
+      password,
+      redirect: false,
     });
 
-    return text
-      .replace(/^[#*"\s]+/, "")
-      .replace(/["]+$/, "")
-      .trim();
+    revalidatePath("/");
+    redirect("/");
   } catch (error) {
-    console.error("Error generating title:", error);
-    return "New Chat";
+    if (error instanceof AuthError) {
+      if (error.type === "CredentialsSignin") {
+        return { error: "Invalid email or password" };
+      }
+      return { error: "An error occurred during login" };
+    }
+    return { error: "An unexpected error occurred" };
   }
+}
+
+export async function register(
+  prevState: RegisterActionState | undefined,
+  formData: FormData
+): Promise<RegisterActionState> {
+  try {
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
+
+    if (!email || !password) {
+      return { error: "Email and password are required" };
+    }
+
+    const existingUser = await getUser(email);
+    if (existingUser.length > 0) {
+      return { error: "A user with this email already exists" };
+    }
+
+    await createUser(email, password);
+
+    await signIn("credentials", {
+      email,
+      password,
+      redirect: false,
+    });
+
+    revalidatePath("/");
+    redirect("/");
+  } catch (error) {
+    if (error instanceof AuthError) {
+      return { error: "An error occurred during registration" };
+    }
+    return { error: "An unexpected error occurred" };
+  }
+}
+
+export async function signOutAction() {
+  await signOut();
+  redirect("/login");
 }
